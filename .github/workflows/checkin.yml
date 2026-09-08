@@ -1,0 +1,51 @@
+name: TRAE 每日签到
+
+# 解决「关机 / 休眠导致本机定时任务漏签」：签到跑在 GitHub 云端，
+# 与本机是否开机、是否联网完全无关。
+on:
+  schedule:
+    # GitHub Actions 使用 UTC，且高峰期可能延迟排队，故安排两次：
+    #   0 0 * * *  -> 北京时间 08:00
+    #   0 2 * * *  -> 北京时间 10:00（兜底补跑，已签到会自动跳过，不会重复领取）
+    - cron: '0 0 * * *'
+    - cron: '0 2 * * *'
+  workflow_dispatch:        # 允许在任何时候手动点一次「Run workflow」
+  push:                     # 首次推送后立即跑一遍，验证凭证是否正确
+    paths:
+      - 'checkin.py'
+      - '.github/workflows/checkin.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  checkin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15      # 内置限流重试最长约 5 分钟，留足余量
+    concurrency:
+      group: trae-checkin    # 同一时刻只允许一个签到任务，杜绝并发重复领取
+      cancel-in-progress: false
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 配置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 执行签到
+        env:
+          TRAE_SESSION: ${{ secrets.TRAE_SESSION }}
+          TRAE_DEVICE_ID: ${{ secrets.TRAE_DEVICE_ID }}
+          TRAE_SESSION_2: ${{ secrets.TRAE_SESSION_2 }}
+          TRAE_DEVICE_ID_2: ${{ secrets.TRAE_DEVICE_ID_2 }}
+          TRAE_SESSION_3: ${{ secrets.TRAE_SESSION_3 }}
+          TRAE_DEVICE_ID_3: ${{ secrets.TRAE_DEVICE_ID_3 }}
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+        run: python checkin.py
+
+      - name: 上传运行日志
+        if: always()
+        run: echo "签到流程结束，退出码=$?" && date -u
