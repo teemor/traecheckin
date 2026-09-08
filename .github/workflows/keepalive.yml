@@ -1,0 +1,36 @@
+name: 保活（防止定时签到被 GitHub 停用）
+
+# 为什么需要它：
+#   GitHub 会对「连续 60 天无提交活动」的仓库静默禁用 schedule 触发器。
+#   禁用后不报错、不发通知——Secret 还有效，但签到再也不会自动跑，且很难察觉。
+#   本工作流每月提交一次空 commit，制造仓库活动，让定时签到永久有效。
+#
+# 为什么不会触发签到：
+#   签到工作流监听 push 且带 paths 过滤（仅 checkin.py / checkin.yml）。
+#   空 commit 不含任何文件变更，不会命中过滤条件，因此不会重复签到、也不会死循环。
+
+on:
+  schedule:
+    - cron: '17 3 1 * *'      # 每月 1 日 03:17 UTC（北京时间 11:17），错开整点避免排队
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: trae-keepalive
+      cancel-in-progress: false
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 提交空 commit
+        run: |
+          git config user.name  "trae-checkin-bot"
+          git config user.email "trae-checkin-bot@users.noreply.github.com"
+          git commit --allow-empty -m "chore: keepalive $(date -u '+%Y-%m')"
+          git push
