@@ -152,7 +152,8 @@ def notify_feishu(webhook: str, text: str):
 
 def beijing_now_str() -> str:
     """GitHub Actions 运行在 UTC，需 +8 小时换算成北京时间。"""
-    return (datetime.datetime.utcnow() + datetime.timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
+    utc_now = datetime.datetime.now(datetime.timezone.utc)
+    return (utc_now + datetime.timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def iter_accounts():
