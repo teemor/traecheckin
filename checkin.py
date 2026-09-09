@@ -29,6 +29,7 @@
 """
 
 import datetime
+import hashlib
 import json
 import os
 import random
@@ -51,9 +52,14 @@ CODE_SUCCESS = {0, 200}
 CODE_BUSY = {9074, 429}
 
 HTTP_TIMEOUT = 30
-BUSY_RETRIES = 10          # 高峰期限流重试次数
+BUSY_RETRIES = 3           # 换取 JWT / 查状态的重试次数（轻量接口）
 BUSY_WAIT_MIN = 15         # 每次静置 15~30 秒后重试
 BUSY_WAIT_MAX = 30
+
+# 领取积分（claim）是风控重点：9074 会持续封锁十几分钟以上，
+# 密集重试（15~30s 一次）实测完全无效，改为分钟级退避。
+CLAIM_RETRIES = 4
+CLAIM_BACKOFF = [60, 120, 240, 360]   # 秒，最坏情况约 13 分钟
 
 
 def http_post(path, headers, body="{}"):
@@ -111,30 +117,78 @@ def get_token(session: str) -> str:
     return token
 
 
-def sign_headers(token: str, device_id: str) -> dict:
-    return {
+def stable_device_id(session: str) -> str:
+    """从会话派生一个**稳定不变**的 16 位设备号。
+
+    刻意不用随机数：真实客户端的设备号是固定的，每次运行都换一个新号
+    更像脚本行为，容易被风控（code=9074）拦下。
+    """
+    h = int(hashlib.sha256(("device:" + session).encode()).hexdigest(), 16)
+    lo, hi = 10 ** 15, 10 ** 16 - 1
+    return str(lo + h % (hi - lo + 1))
+
+
+def stable_machine_id(session: str) -> str:
+    """派生稳定的 64 位十六进制机器号，对齐 trae 客户端的 X-Machine-Id。"""
+    return hashlib.sha256(("machine:" + session).encode()).hexdigest()
+
+
+def sign_headers(token: str, device_id: str, machine_id: str = "") -> dict:
+    headers = {
         "Authorization": "Cloud-IDE-JWT " + token,
         "X-User-Region": "cn",
         "x-device-id": device_id,
         "Content-Type": "application/json",
         "User-Agent": UA,
+        # 本机版（实测可成功领取）会带上这三个头。纯脚本请求缺了
+        # Referer / Origin / X-Machine-Id，更容易被风控判为异常。
+        "Referer": "https://www.trae.cn/",
+        "Origin": "https://www.trae.cn",
     }
+    if machine_id:
+        headers["X-Machine-Id"] = machine_id
+    return headers
 
 
-def today_status(token: str, device_id: str) -> dict:
+def today_status(token: str, device_id: str, machine_id: str = "") -> dict:
     """查询今日签到状态。"""
-    _, data, raw = post_with_retry(PATH_STATUS, sign_headers(token, device_id), "{}", "状态查询")
+    _, data, raw = post_with_retry(PATH_STATUS, sign_headers(token, device_id, machine_id),
+                                   "{}", "状态查询")
     if not data:
         raise RuntimeError(f"状态查询无有效响应：{raw[:160]}")
     return data
 
 
-def claim(token: str, device_id: str) -> dict:
-    """领取签到积分。"""
-    _, data, raw = post_with_retry(PATH_CLAIM, sign_headers(token, device_id), "{}", "签到提交")
+def claim(token: str, device_id: str, machine_id: str = "") -> dict:
+    """领取签到积分（单次，不重试 —— 重试策略交给 claim_with_backoff）。"""
+    _, data, raw = http_post(PATH_CLAIM, sign_headers(token, device_id, machine_id), "{}")
     if not data:
         raise RuntimeError(f"签到无有效响应：{raw[:160]}")
     return data
+
+
+def claim_with_backoff(session: str, device_id: str, machine_id: str = "") -> dict:
+    """带长间隔退避的领取。
+
+    code=9074 不是普通限流：实测会连续封锁十几分钟甚至更久，密集重试
+    （每 15~30 秒一次）不仅无效，反而可能延长封锁。因此改为
+    「少量尝试 + 分钟级退避」，且每次尝试都重新换取 JWT，避免复用
+    同一个 token 被判为重复请求。
+    """
+    result: dict = {}
+    for attempt in range(1, CLAIM_RETRIES + 2):
+        token = get_token(session)                     # 每次都用全新 JWT
+        result = claim(token, device_id, machine_id)
+        code = result.get("code")
+        if code in CODE_SUCCESS or code not in CODE_BUSY:
+            return result                              # 成功或非限流错误，交由调用方判断
+        if attempt > CLAIM_RETRIES:
+            break
+        wait = CLAIM_BACKOFF[min(attempt - 1, len(CLAIM_BACKOFF) - 1)]
+        print(f"  [风控] 领取被拒 code={code}（{result.get('message', '')}），"
+              f"第 {attempt}/{CLAIM_RETRIES + 1} 次，{wait}s 后换新 JWT 重试")
+        time.sleep(wait)
+    return result
 
 
 def notify_feishu(webhook: str, text: str):
@@ -186,13 +240,15 @@ def main() -> int:
 
     for index, session, device_id in accounts:
         name = f"账号 {index}"
-        device_id = device_id or random_device_id()
+        # 设备号固定（由会话派生），不再每次随机 —— 随机设备号更像脚本，易触发风控
+        device_id = device_id or stable_device_id(session)
+        machine_id = stable_machine_id(session)
         print(f"[{name}] device_id={device_id}")
         try:
             token = get_token(session)
             print(f"[{name}] 已换取新 JWT，长度={len(token)}")
 
-            status = today_status(token, device_id)
+            status = today_status(token, device_id, machine_id)
             code = status.get("code")
             if code in CODE_AUTH_INVALID:
                 raise RuntimeError(f"会话已失效（code={code}），请重新获取 X-Cloudide-Session 并更新 Secret")
@@ -214,7 +270,7 @@ def main() -> int:
             if expect:
                 print(f"[{name}] 今日待领取：{expect} 积分")
 
-            result = claim(token, device_id)
+            result = claim_with_backoff(session, device_id, machine_id)
             rcode = result.get("code")
             if rcode in CODE_AUTH_INVALID:
                 raise RuntimeError(f"签到被拒：会话失效（code={rcode}）")
