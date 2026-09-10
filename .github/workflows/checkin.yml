@@ -59,10 +59,13 @@ jobs:
         env:
           TRAE_SESSION: ${{ secrets.TRAE_SESSION }}
           TRAE_DEVICE_ID: ${{ secrets.TRAE_DEVICE_ID }}
+          TRAE_MACHINE_ID: ${{ secrets.TRAE_MACHINE_ID }}
           TRAE_SESSION_2: ${{ secrets.TRAE_SESSION_2 }}
           TRAE_DEVICE_ID_2: ${{ secrets.TRAE_DEVICE_ID_2 }}
+          TRAE_MACHINE_ID_2: ${{ secrets.TRAE_MACHINE_ID_2 }}
           TRAE_SESSION_3: ${{ secrets.TRAE_SESSION_3 }}
           TRAE_DEVICE_ID_3: ${{ secrets.TRAE_DEVICE_ID_3 }}
+          TRAE_MACHINE_ID_3: ${{ secrets.TRAE_MACHINE_ID_3 }}
           FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
         run: python checkin.py
 

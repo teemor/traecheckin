@@ -59,10 +59,33 @@ POST /trae/api/v2/ug/checkin_credits/claim    领取
 | Secret 名 | 必填 | 说明 |
 |---|---|---|
 | `TRAE_SESSION` | ✅ | 账号 1 的 `X-Cloudide-Session` 值 |
-| `TRAE_DEVICE_ID` | ❌ | 账号 1 的设备号，缺省随机 |
+| `TRAE_DEVICE_ID` | ⚠️ 强烈建议 | 账号 1 的**真实**设备号，见下方「9074 排障」 |
+| `TRAE_MACHINE_ID` | ⚠️ 强烈建议 | 账号 1 的**真实**机器号，见下方「9074 排障」 |
 | `TRAE_SESSION_2` | ❌ | 账号 2 的会话；填了才会读 `TRAE_SESSION_3`，依次类推 |
 | `TRAE_DEVICE_ID_2` | ❌ | 账号 2 的设备号 |
+| `TRAE_MACHINE_ID_2` | ❌ | 账号 2 的机器号 |
 | `FEISHU_WEBHOOK` | ❌ | 飞书机器人 webhook，用于推送签到结果 |
+
+### 9074 排障：换取 JWT 正常，但领取积分一直被拒
+
+现象：日志里 `已换取新 JWT` 和状态查询都正常，只有 `claim` 反复返回
+`code=9074`，重试到超时后 Actions 标红。
+
+这是**风控拦截**，不是凭证失效 —— 换 JWT、加退避都解决不了。按以下顺序排查：
+
+1. **补真实设备指纹（首要）**
+   只配 `TRAE_SESSION` 时，脚本只能拿会话哈希**伪造**设备号/机器号。
+   真实客户端这两个值是安装时生成并长期固化的、与账号有绑定关系，伪造号一验就露。
+   在本机执行 `python capture_device.py --copy`，把得到的值填进
+   `TRAE_DEVICE_ID` 与 `TRAE_MACHINE_ID` 两个 Secret。
+2. **仍被拒 → 基本可判定为机房 IP 风控**
+   GitHub 托管 runner 跑在 Azure 数据中心，而积分属于可套现资源，
+   服务端对机房 IP 收紧是常见做法。这种情况下**改代码没用**，两条出路：
+   - 改用**自托管 runner**（跑在你自己的机器上，IP 与本机一致）——但机器关机时同样会漏签
+   - 直接以**本机定时任务为主力**，把云端当可失败的备份（见下）
+
+> 判断依据：本机版 `trae_checkin.py` 一直能成功领取（它发的是真实指纹 + 家庭 IP），
+> 云端失败 → 差异只可能来自「指纹」或「IP」这两项。
 
 ---
 

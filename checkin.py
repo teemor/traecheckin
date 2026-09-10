@@ -19,10 +19,19 @@
 
  环境变量（GitHub Actions 中通过 Settings > Secrets 配置）：
    TRAE_SESSION        （必填）账号 1 的 X-Cloudide-Session
-   TRAE_DEVICE_ID      （选填）16 位数字设备号，缺省随机
+   TRAE_DEVICE_ID      （选填）16 位数字设备号，**强烈建议填真实值**
+   TRAE_MACHINE_ID     （选填）真实机器号，取自本机 TRAE 的 storage.json
    TRAE_SESSION_2..N   （选填）第 N 个账号的会话，缺失即停止读取更多账号
    TRAE_DEVICE_ID_2..N （选填）对应设备号
+   TRAE_MACHINE_ID_2..N（选填）对应机器号
    FEISHU_WEBHOOK      （选填）签到结果汇总推送
+
+ 关于设备指纹（2026-09-10 实测结论，很重要）：
+   只填 TRAE_SESSION 也能跑通「换取 JWT / 查询状态」，但**领取积分会被风控
+   （code=9074）持续拒绝**。原因是缺失真实设备指纹时，脚本只能伪造一个由会话
+   哈希派生的号码，而真实客户端的设备号/机器号是该设备安装时生成并固化的，
+   形态与账号绑定关系都不同。用 capture_device.py --copy 取真实值填入即可。
+   若填了真实指纹仍被拒，则基本可判定为「机房 IP 风控」，见 README 排障章节。
 
  退出码：0 = 全部成功；1 = 有账号失败（Actions 会标红）
 =============================================================================
@@ -41,7 +50,11 @@ import urllib.error
 import urllib.request
 
 BASE = "https://api.trae.cn"
-UA = "TraeCheckin-Cloud/1.0"
+
+# UA 刻意伪装成真实 TRAE 客户端。
+# 教训（2026-09-10）：原先用的 "TraeCheckin-Cloud/1.0" 等于在请求头里自报家门，
+# 风控（code=9074）几乎必然命中。本机版用的就是这个真实客户端 UA，实测可成功领取。
+UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) TraeCN/2.3 AutoCheckin/2.0.0"
 
 PATH_TOKEN = "/cloudide/api/v3/common/GetUserToken"
 PATH_STATUS = "/trae/api/v2/ug/checkin_credits/status"
@@ -118,10 +131,14 @@ def get_token(session: str) -> str:
 
 
 def stable_device_id(session: str) -> str:
-    """从会话派生一个**稳定不变**的 16 位设备号。
+    """兜底：从会话派生一个**稳定不变**的 16 位设备号。
 
     刻意不用随机数：真实客户端的设备号是固定的，每次运行都换一个新号
     更像脚本行为，容易被风控（code=9074）拦下。
+
+    注意这只是「没有配置真实设备号时」的退路。2026-09-10 的定位结论：
+    派生号在形态上仍与真实客户端不同（真实号来自客户端首次生成后固化），
+    首选仍是 Secret 里配置的真实设备号 TRAE_DEVICE_ID。
     """
     h = int(hashlib.sha256(("device:" + session).encode()).hexdigest(), 16)
     lo, hi = 10 ** 15, 10 ** 16 - 1
@@ -129,7 +146,10 @@ def stable_device_id(session: str) -> str:
 
 
 def stable_machine_id(session: str) -> str:
-    """派生稳定的 64 位十六进制机器号，对齐 trae 客户端的 X-Machine-Id。"""
+    """兜底：派生稳定的 64 位十六进制机器号。
+
+    同 stable_device_id —— 首选 Secret 中配置的真实 TRAE_MACHINE_ID。
+    """
     return hashlib.sha256(("machine:" + session).encode()).hexdigest()
 
 
@@ -211,16 +231,24 @@ def beijing_now_str() -> str:
 
 
 def iter_accounts():
-    """产出 (序号, session, device_id)：账号 1 读 TRAE_SESSION，其后 TRAE_SESSION_N。"""
+    """产出 (序号, session, device_id, machine_id)。
+
+    账号 1 读 TRAE_SESSION / TRAE_DEVICE_ID / TRAE_MACHINE_ID，其后依次 _N。
+    设备号与机器号都是可选项，缺失时回退到由会话派生的稳定值。
+    """
     s = os.environ.get("TRAE_SESSION", "").strip()
     if s:
-        yield 1, s, os.environ.get("TRAE_DEVICE_ID", "").strip()
+        yield (1, s,
+               os.environ.get("TRAE_DEVICE_ID", "").strip(),
+               os.environ.get("TRAE_MACHINE_ID", "").strip())
     n = 2
     while True:
         s = os.environ.get(f"TRAE_SESSION_{n}", "").strip()
         if not s:
             break
-        yield n, s, os.environ.get(f"TRAE_DEVICE_ID_{n}", "").strip()
+        yield (n, s,
+               os.environ.get(f"TRAE_DEVICE_ID_{n}", "").strip(),
+               os.environ.get(f"TRAE_MACHINE_ID_{n}", "").strip())
         n += 1
 
 
@@ -238,12 +266,15 @@ def main() -> int:
     ok_names, fail_names = [], []
     all_ok = True
 
-    for index, session, device_id in accounts:
+    for index, session, device_id, machine_id in accounts:
         name = f"账号 {index}"
-        # 设备号固定（由会话派生），不再每次随机 —— 随机设备号更像脚本，易触发风控
+        # 优先使用 Secret 中配置的**真实**设备号/机器号（与本机实际登录 TRAE 的
+        # 设备一致）；未配置时才回退到会话派生的稳定值。
+        real_dev, real_mid = bool(device_id), bool(machine_id)
         device_id = device_id or stable_device_id(session)
-        machine_id = stable_machine_id(session)
-        print(f"[{name}] device_id={device_id}")
+        machine_id = machine_id or stable_machine_id(session)
+        print(f"[{name}] device_id={'真实' if real_dev else '派生(兜底)'}"
+              f" machine_id={'真实' if real_mid else '派生(兜底)'}")
         try:
             token = get_token(session)
             print(f"[{name}] 已换取新 JWT，长度={len(token)}")
