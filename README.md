@@ -59,8 +59,8 @@ POST /trae/api/v2/ug/checkin_credits/claim    领取
 | Secret 名 | 必填 | 说明 |
 |---|---|---|
 | `TRAE_SESSION` | ✅ | 账号 1 的 `X-Cloudide-Session` 值 |
-| `TRAE_DEVICE_ID` | ⚠️ 强烈建议 | 账号 1 的**真实**设备号，见下方「9074 排障」 |
-| `TRAE_MACHINE_ID` | ⚠️ 强烈建议 | 账号 1 的**真实**机器号，见下方「9074 排障」 |
+| `TRAE_MACHINE_ID` | ⚠️ 强烈建议 | 账号 1 的**真实**机器号（服务端认得的标识），见下方「9074 排障」 |
+| `TRAE_DEVICE_ID` | ❌ | 16 位设备号。非 TRAE 下发的值，填它只为与本机完全一致，可省略 |
 | `TRAE_SESSION_2` | ❌ | 账号 2 的会话；填了才会读 `TRAE_SESSION_3`，依次类推 |
 | `TRAE_DEVICE_ID_2` | ❌ | 账号 2 的设备号 |
 | `TRAE_MACHINE_ID_2` | ❌ | 账号 2 的机器号 |
@@ -73,11 +73,14 @@ POST /trae/api/v2/ug/checkin_credits/claim    领取
 
 这是**风控拦截**，不是凭证失效 —— 换 JWT、加退避都解决不了。按以下顺序排查：
 
-1. **补真实设备指纹（首要）**
-   只配 `TRAE_SESSION` 时，脚本只能拿会话哈希**伪造**设备号/机器号。
-   真实客户端这两个值是安装时生成并长期固化的、与账号有绑定关系，伪造号一验就露。
-   在本机执行 `python capture_device.py --copy`，把得到的值填进
-   `TRAE_DEVICE_ID` 与 `TRAE_MACHINE_ID` 两个 Secret。
+1. **补齐真实机器号（首要，只这一项真正要紧）**
+   只配 `TRAE_SESSION` 时，脚本只能拿会话哈希**伪造**一个机器号，而真实客户端
+   的 `X-Machine-Id` 是 TRAE 自己生成、服务端认得的标识，伪造号一验就露。
+   在本机执行 `python capture_device.py --copy machine`，把值填进
+   Secret `TRAE_MACHINE_ID`。
+
+   （`x-device-id` 不必纠结：本机那个值本来就是脚本随机生成后固化的，
+   并不是 TRAE 下发的真实设备号，服务端无从区分真假，填不填影响不大。）
 2. **仍被拒 → 基本可判定为机房 IP 风控**
    GitHub 托管 runner 跑在 Azure 数据中心，而积分属于可套现资源，
    服务端对机房 IP 收紧是常见做法。这种情况下**改代码没用**，两条出路：

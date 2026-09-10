@@ -19,8 +19,10 @@
 
  环境变量（GitHub Actions 中通过 Settings > Secrets 配置）：
    TRAE_SESSION        （必填）账号 1 的 X-Cloudide-Session
-   TRAE_DEVICE_ID      （选填）16 位数字设备号，**强烈建议填真实值**
-   TRAE_MACHINE_ID     （选填）真实机器号，取自本机 TRAE 的 storage.json
+   TRAE_MACHINE_ID     （强烈建议）**真实**机器号，取自本机 TRAE 的 storage.json
+                        —— 这是服务端认得的设备标识，也是 9074 排障的关键项
+   TRAE_DEVICE_ID      （选填）16 位数字设备号。注意：本机这个值本身也是脚本
+                        随机生成后固化的，并非 TRAE 下发，填它只为两端一致
    TRAE_SESSION_2..N   （选填）第 N 个账号的会话，缺失即停止读取更多账号
    TRAE_DEVICE_ID_2..N （选填）对应设备号
    TRAE_MACHINE_ID_2..N（选填）对应机器号
