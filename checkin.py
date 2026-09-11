@@ -51,6 +51,9 @@ import time
 import urllib.error
 import urllib.request
 
+# 2026-09-11：用于触发一次验证运行，确认 TRAE_MACHINE_ID Secret 是否已生效。
+# 正常情况下本行无需改动。
+
 BASE = "https://api.trae.cn"
 
 # UA 刻意伪装成真实 TRAE 客户端。
