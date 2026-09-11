@@ -19,21 +19,24 @@
 
  环境变量（GitHub Actions 中通过 Settings > Secrets 配置）：
    TRAE_SESSION        （必填）账号 1 的 X-Cloudide-Session
-   TRAE_MACHINE_ID     （强烈建议）**真实**机器号，取自本机 TRAE 的 storage.json
-                        —— 这是服务端认得的设备标识，也是 9074 排障的关键项
-   TRAE_DEVICE_ID      （选填）16 位数字设备号。注意：本机这个值本身也是脚本
-                        随机生成后固化的，并非 TRAE 下发，填它只为两端一致
+   TRAE_MACHINE_ID     （强烈建议）机器号，取自本机 TRAE 的 storage.json
+                       的 telemetry.machineId（64 位十六进制）
+   TRAE_DEVICE_ID      （强烈建议）**TRAE 注册设备号**：storage.json 里
+                       `iCubeAuthInfo://icube-dc:<数字>` 这个键名中的数字部分。
+                       服务端按注册指纹校验，填陌生号会触发更严格限流（9074）。
+                       切勿填 UUID 形态的 telemetry.devDeviceId。
    TRAE_SESSION_2..N   （选填）第 N 个账号的会话，缺失即停止读取更多账号
    TRAE_DEVICE_ID_2..N （选填）对应设备号
    TRAE_MACHINE_ID_2..N（选填）对应机器号
    FEISHU_WEBHOOK      （选填）签到结果汇总推送
 
- 关于设备指纹（2026-09-10 实测结论，很重要）：
+ 关于设备指纹（2026-09-11 修正，此前结论有误）：
    只填 TRAE_SESSION 也能跑通「换取 JWT / 查询状态」，但**领取积分会被风控
-   （code=9074）持续拒绝**。原因是缺失真实设备指纹时，脚本只能伪造一个由会话
-   哈希派生的号码，而真实客户端的设备号/机器号是该设备安装时生成并固化的，
-   形态与账号绑定关系都不同。用 capture_device.py --copy 取真实值填入即可。
-   若填了真实指纹仍被拒，则基本可判定为「机房 IP 风控」，见 README 排障章节。
+   （code=9074）持续拒绝** —— 因为缺失设备指纹时脚本会拿会话哈希伪造一个号，
+   而服务端是按**注册指纹**校验的，陌生设备会被更严格地限流。
+   用 capture_device.py --copy device / --copy machine 取本机真值填入即可。
+   注解里会打印掩码（如 20…46(16位)）便于远程核对填的是不是那个值。
+   两个真值都补齐后仍被拒，才可以判定为「机房 IP 风控」，见 README 排障章节。
 
  退出码：0 = 全部成功；1 = 有账号失败（Actions 会标红）
 =============================================================================
@@ -229,6 +232,20 @@ def annotate(level: str, message: str):
     print(f"::{level}::{safe}")
 
 
+def fp(value: str | None) -> str:
+    """指纹掩码：只暴露长度与首尾各 2 位。
+
+    注解会在**公开仓库页面**上展示，绝不能带明文；但只写「真实/派生」又无法
+    远程核对到底是哪个值，所以给一个掩码 —— 能对号入座，又不泄露原值。
+    """
+    if not value:
+        return ""
+    v = str(value)
+    if len(v) <= 6:
+        return f"({len(v)}位)"
+    return f"{v[:2]}…{v[-2:]}({len(v)}位)"
+
+
 def notify_feishu(webhook: str, text: str):
     if not webhook:
         return
@@ -286,16 +303,19 @@ def main() -> int:
 
     for index, session, device_id, machine_id in accounts:
         name = f"账号 {index}"
-        # 优先使用 Secret 中配置的**真实**设备号/机器号（与本机实际登录 TRAE 的
-        # 设备一致）；未配置时才回退到会话派生的稳定值。
-        real_dev, real_mid = bool(device_id), bool(machine_id)
+        # 优先使用 Secret 中配置的设备号/机器号（须与本机实际登录 TRAE 的设备一致）；
+        # 未配置时才回退到会话派生的稳定值。
+        print(f"[{name}] device_id={fp(device_id) or '派生(兜底)'}"
+              f" machine_id={fp(machine_id) or '派生(兜底)'}")
+        annotate("notice",
+                 f"[{name}] 设备指纹 device={fp(device_id) or '派生'}"
+                 f" machine={fp(machine_id) or '派生'}")
+        if device_id and not (device_id.isdigit() and 8 <= len(device_id) <= 20):
+            annotate("warning",
+                     f"[{name}] 设备号格式可疑（非纯数字，或长度异常）——"
+                     f"服务端只认注册设备号，填错会触发更严格限流 9074")
         device_id = device_id or stable_device_id(session)
         machine_id = machine_id or stable_machine_id(session)
-        print(f"[{name}] device_id={'真实' if real_dev else '派生(兜底)'}"
-              f" machine_id={'真实' if real_mid else '派生(兜底)'}")
-        annotate("notice",
-                 f"[{name}] 设备指纹 device={'真实' if real_dev else '派生'}"
-                 f" machine={'真实' if real_mid else '派生'}")
         try:
             token = get_token(session)
             print(f"[{name}] 已换取新 JWT，长度={len(token)}")
