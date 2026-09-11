@@ -209,8 +209,21 @@ def claim_with_backoff(session: str, device_id: str, machine_id: str = "") -> di
         wait = CLAIM_BACKOFF[min(attempt - 1, len(CLAIM_BACKOFF) - 1)]
         print(f"  [风控] 领取被拒 code={code}（{result.get('message', '')}），"
               f"第 {attempt}/{CLAIM_RETRIES + 1} 次，{wait}s 后换新 JWT 重试")
+        annotate("warning", f"领取被风控拒绝 code={code}，第 {attempt} 次，{wait}s 后重试")
         time.sleep(wait)
     return result
+
+
+def annotate(level: str, message: str):
+    """输出一条 GitHub Actions 注解。
+
+    为什么需要它：本机没有 GitHub 令牌，读不到 Actions 的运行日志，
+    出问题只能靠猜。而**公开仓库的摘要页会显示注解**，所以把关键诊断信息
+    以注解形式打出来，就能在无需令牌的情况下远程看到「设备指纹是真实还是
+    派生」「最终返回了什么 code」，排障效率完全不同。
+    """
+    safe = " ".join(str(message).split())
+    print(f"::{level}::{safe}")
 
 
 def notify_feishu(webhook: str, text: str):
@@ -277,6 +290,9 @@ def main() -> int:
         machine_id = machine_id or stable_machine_id(session)
         print(f"[{name}] device_id={'真实' if real_dev else '派生(兜底)'}"
               f" machine_id={'真实' if real_mid else '派生(兜底)'}")
+        annotate("notice",
+                 f"[{name}] 设备指纹 device={'真实' if real_dev else '派生'}"
+                 f" machine={'真实' if real_mid else '派生'}")
         try:
             token = get_token(session)
             print(f"[{name}] 已换取新 JWT，长度={len(token)}")
@@ -292,6 +308,7 @@ def main() -> int:
                 streak = status.get("continuous_days") or status.get("streak")
                 extra = f"，连续签到 {streak} 天" if streak else ""
                 print(f"[{name}] 今日已签到，无需重复领取{extra}")
+                annotate("notice", f"[{name}] 今日已签到，跳过（未重复领取）")
                 ok_names.append(name)
                 continue
             if status.get("enable") is False:
@@ -315,10 +332,12 @@ def main() -> int:
             tail = f"，本次获得 {credits} 积分" if credits else ""
             tail += f"，连续签到 {streak} 天" if streak else ""
             print(f"[{name}] 签到成功{tail}")
+            annotate("notice", f"[{name}] 签到成功{tail}")
             ok_names.append(name)
 
         except Exception as e:
             print(f"[{name}] 异常：{e}")
+            annotate("error", f"[{name}] 签到失败：{e}")
             fail_names.append(name)
             all_ok = False
 
