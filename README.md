@@ -59,8 +59,8 @@ POST /trae/api/v2/ug/checkin_credits/claim    领取
 | Secret 名 | 必填 | 说明 |
 |---|---|---|
 | `TRAE_SESSION` | ✅ | 账号 1 的 `X-Cloudide-Session` 值 |
-| `TRAE_MACHINE_ID` | ⚠️ 强烈建议 | 账号 1 的**真实**机器号（服务端认得的标识），见下方「9074 排障」 |
-| `TRAE_DEVICE_ID` | ❌ | 16 位设备号。非 TRAE 下发的值，填它只为与本机完全一致，可省略 |
+| `TRAE_MACHINE_ID` | ⚠️ 强烈建议 | 账号 1 的机器号（`telemetry.machineId`），见下方「9074 排障」 |
+| `TRAE_DEVICE_ID` | ⚠️ 强烈建议 | 账号 1 的**注册设备号**，取自 `storage.json` 里 `iCubeAuthInfo://icube-dc:<数字>` 的数字部分，见下方「9074 排障」 |
 | `TRAE_SESSION_2` | ❌ | 账号 2 的会话；填了才会读 `TRAE_SESSION_3`，依次类推 |
 | `TRAE_DEVICE_ID_2` | ❌ | 账号 2 的设备号 |
 | `TRAE_MACHINE_ID_2` | ❌ | 账号 2 的机器号 |
@@ -73,22 +73,26 @@ POST /trae/api/v2/ug/checkin_credits/claim    领取
 
 这是**风控拦截**，不是凭证失效 —— 换 JWT、加退避都解决不了。按以下顺序排查：
 
-1. **补齐真实机器号（首要，只这一项真正要紧）**
-   只配 `TRAE_SESSION` 时，脚本只能拿会话哈希**伪造**一个机器号，而真实客户端
-   的 `X-Machine-Id` 是 TRAE 自己生成、服务端认得的标识，伪造号一验就露。
-   在本机执行 `python capture_device.py --copy machine`，把值填进
-   Secret `TRAE_MACHINE_ID`。
+1. **两个设备指纹都要填成真值（首要）**
+   只配 `TRAE_SESSION` 时，脚本只能拿会话哈希伪造指纹，而服务端是按注册
+   指纹校验的，陌生设备会被**更严格地限流**（这正是 `9074` 的常见成因）。
 
-   （`x-device-id` 不必纠结：本机那个值本来就是脚本随机生成后固化的，
-   并不是 TRAE 下发的真实设备号，服务端无从区分真假，填不填影响不大。）
-2. **仍被拒 → 基本可判定为机房 IP 风控**
-   GitHub 托管 runner 跑在 Azure 数据中心，而积分属于可套现资源，
-   服务端对机房 IP 收紧是常见做法。这种情况下**改代码没用**，两条出路：
-   - 改用**自托管 runner**（跑在你自己的机器上，IP 与本机一致）——但机器关机时同样会漏签
-   - 直接以**本机定时任务为主力**，把云端当可失败的备份（见下）
+   - `TRAE_MACHINE_ID` ← `storage.json` 的 `telemetry.machineId`（64 位）
+   - `TRAE_DEVICE_ID` ← **注册设备号**，即 `storage.json` 里
+     `iCubeAuthInfo://icube-dc:<16位数字>` 这个**键名**中的数字部分
 
-> 判断依据：本机版 `trae_checkin.py` 一直能成功领取（它发的是真实指纹 + 家庭 IP），
-> 云端失败 → 差异只可能来自「指纹」或「IP」这两项。
+   在本机执行 `python capture_device.py --copy machine` /
+   `--copy device` 分别取值并填入对应 Secret。
+
+   ⚠️ 别把 `telemetry.devDeviceId`（UUID 形态）当成设备号；服务端不认 UUID，
+   会触发更严格限流。设备号必须是纯数字。
+2. **仍被拒 → 再考虑机房 IP 风控**
+   GitHub 托管 runner 跑在 Azure 数据中心，服务端对机房 IP 收紧是常见做法。
+   这种情况改代码没用，出路：换国内常开服务器（VPS/青龙/云函数），或
+   以本机定时任务为主力、云端当可失败的备份。
+
+> 判断依据：本机版 `trae_checkin.py` 一直能成功领取，云端失败 —— 差异在
+> 「指纹」或「IP」两项；先把指纹补齐并验证，才能把 IP 这一项定为结论。
 
 ---
 
